@@ -14,7 +14,31 @@ const int MPU=0x68;  // I2C address of the MPU-6050
 #define MPU6050_SMPLRT_DIV    0x19
 #define MPU6050_CONFIG        0x1A
 
+int16_t AcY, GyZ;
+int16_t AcYoffset, GyZoffset;
+float AcY_integral, GyZ_integral;
+
+
+void IMUwriteReg(byte reg, byte val) {
+  Wire.begin();
+  Wire.beginTransmission(MPU);
+  Wire.write(reg);
+  Wire.write(val);
+  Wire.endTransmission(true);
+}
+
+void readIMU(int16_t *AcY, int16_t *GyZ) {
+  Wire.beginTransmission(MPU);
+  Wire.write(0x3D);  // starting with register 0x3D (ACCEL_YOUT_H)
+  Wire.endTransmission(false);
+  Wire.requestFrom(MPU,12,true);  // request a total of 12 registers
+  *AcY = Wire.read()<<8|Wire.read();  // 0x3D (ACCEL_YOUT_H) & 0x3E (ACCEL_YOUT_L)
+  for(int i=0; i<8; i++) Wire.read(); // Discard 0x3F-0x46
+  *GyZ = Wire.read()<<8 | Wire.read();  // 0x47 (GYRO_ZOUT_H) & 0x48 (GYRO_ZOUT_L)
+}
+
 void init_IMU() {
+  Serial.println("Calibrating IMU...");
   for(int i=0; i<3; i++) { // Reset the IMU a few times
     IMUwriteReg(MPU6050_PWR_MGMT_1, bit(7) );  // DEVICE_RESET to 1 (D7=1)
     delay(100);
@@ -29,6 +53,22 @@ void init_IMU() {
   IMUwriteReg(MPU6050_SMPLRT_DIV, 0 ); // set sampling rate to 1khz (1khz / (1 + 0) = 1000 Hz)
 
   IMUwriteReg(MPU6050_CONFIG, bit(0) | bit(5) ); // disable digital low pass filter (D0=D1=D2=0) and EXT_SYNC to GYRO_ZOUT (D3=D4=0, D5=1)
+
+  delay(1000);
+
+  // Measure IMU sensor offsets (robot must remain still)
+  AcYoffset = 0;
+  GyZoffset = 0;
+  for(int i=0; i<10; i++) {
+    readIMU(&AcY, &GyZ);
+    AcYoffset += AcY;
+    GyZoffset += GyZ;
+  }
+  AcYoffset /= 10;
+  GyZoffset /= 10;
+  Serial.println("Offset:");
+  Serial.println(AcYoffset);
+  Serial.println(GyZoffset);
 }
 
 
@@ -74,47 +114,35 @@ unsigned int defAnalogPIN[5]={DIST_1_PIN,DIST_2_PIN,DIST_3_PIN,DIST_4_PIN,DIST_5
 
 
 
-int16_t AcY, GyZ;
-int16_t AcYoffset, GyZoffset;
-float AcY_integral, GyZ_integral;
-
-unsigned long prev_ts;
-
-void IMUwriteReg(byte reg, byte val) {
-  Wire.begin();
-  Wire.beginTransmission(MPU);
-  Wire.write(reg);
-  Wire.write(val);
-  Wire.endTransmission(true);
-}
 
 
 
-QTRSensorsRC qtrrc((unsigned char[]) {IR1, IR2, IR3, IR4, IR5, IR6, IR7, IR8}, NUM_IR_SENSORS, TIMEOUT, QTR_NO_EMITTER_PIN); //emisor siempre encendido
+QTRSensorsRC qtrrc((unsigned char[]) {IR1, IR2, IR3, IR4, IR5, IR6, IR7, IR8}, NUM_IR_SENSORS, TIMEOUT, QTR_NO_EMITTER_PIN); // IR emitter is always ON
 
-void calibrateIR( int time, bool printflag ){
+void calibrateIR(int time){
   int i;
+  Serial.println("Calibrating line sensor... please sweep the sensor across a black line a few times");
   //ledOn();
-  for (i = 0; i < 40*time; i++)
-  {
-    qtrrc.calibrate();       // reads all sensors 10 times at 2500 us per read (i.e. ~25 ms per call)
-  }
+  for(i=0; i<40*time; i++) qtrrc.calibrate(); // reads all sensors at 2500 us per read (i.e. ~25 ms per call)
   //ledOff();
   //print results
-  if(printflag)Serial.println("Resultados\nMinimos:");
-  for (i = 0; i < NUM_IR_SENSORS; i++){
-    if(printflag)Serial.print(qtrrc.calibratedMinimumOn[i]);
-    if(printflag)Serial.print(" ");
+  Serial.println("Results\nMinimum: ");
+  for(i=0; i<NUM_IR_SENSORS; i++){
+    Serial.print(qtrrc.calibratedMinimumOn[i]);
+    Serial.print(" ");
   }
-  if(printflag)Serial.println();
-  if(printflag)Serial.println("Maximos:");
-  for (i = 0; i < NUM_IR_SENSORS; i++){
-    if(printflag)Serial.print(qtrrc.calibratedMaximumOn[i]);
-    if(printflag)Serial.print(" ");
+  Serial.println();
+  Serial.print("Maximum: ");
+  for(i=0; i<NUM_IR_SENSORS; i++){
+    Serial.print(qtrrc.calibratedMaximumOn[i]);
+    Serial.print(" ");
   }
-  if(printflag)Serial.println();
+  Serial.println();
 }
 
+
+
+unsigned long prev_ts;
 
 void setup() {
   delay(400);
@@ -126,24 +154,13 @@ void setup() {
 
   //digitalWrite(LED_RED_PIN, HIGH);
 
+  Serial.begin(115200);
+  Serial.println("Starting up sensor board...");
+
   init_IMU();
 
-  Serial.begin(115200);
-  delay(1000);
-
-  // Measure IMU sensor offsets (robot must remain still)
-  AcYoffset = 0;
-  GyZoffset = 0;
-  for(int i=0; i<10; i++) {
-    readIMU(&AcY, &GyZ);
-    AcYoffset += AcY;
-    GyZoffset += GyZ;
-  }
-  AcYoffset /= 10;
-  GyZoffset /= 10;
-  Serial.println("Offset:");
-  Serial.println(AcYoffset);
-  Serial.println(GyZoffset);
+  
+  calibrateIR(4);
 
 
   //digitalWrite(LED_RED_PIN, LOW);
@@ -157,15 +174,7 @@ void setup() {
   GyZ_integral = 0;
 }
 
-void readIMU(int16_t *AcY, int16_t *GyZ) {
-  Wire.beginTransmission(MPU);
-  Wire.write(0x3D);  // starting with register 0x3D (ACCEL_YOUT_H)
-  Wire.endTransmission(false);
-  Wire.requestFrom(MPU,12,true);  // request a total of 12 registers
-  *AcY = Wire.read()<<8|Wire.read();  // 0x3D (ACCEL_YOUT_H) & 0x3E (ACCEL_YOUT_L)
-  for(int i=0; i<8; i++) Wire.read(); // Discard 0x3F-0x46
-  *GyZ = Wire.read()<<8 | Wire.read();  // 0x47 (GYRO_ZOUT_H) & 0x48 (GYRO_ZOUT_L)
-}
+
 
 
 
@@ -176,27 +185,28 @@ unsigned long last_time_ir=0;
 double line_derivate=0;
 unsigned int line_pos=0;
 unsigned int values[NUM_IR_SENSORS];
-unsigned int dist_value[NUM_DIST_SENSORS];
 unsigned int dist_min_values[NUM_DIST_SENSORS]={2000};
 
 
-inline void sendValues2ESP(){
+void sendValues2ESP() {
     int i;
     //Serial.print(micros()/1000000.);
     //Serial.print(",");
+    Serial.print(GyZ_integral);
+    Serial.print(" ");
     Serial.print(line_pos);
-    Serial.print(",");
+    Serial.print(" ");
     Serial.print(line_derivate);
-    Serial.print(",");
-    for(i=0;i<NUM_DIST_SENSORS;i++){
-        Serial.print(dist_value[i]);
-        Serial.print(",");
+    Serial.print(" ");
+    for(i=0; i<NUM_DIST_SENSORS; i++){
+        Serial.print(dist_min_values[i]);
+        Serial.print(" ");
     }
-    for(i=0;i<NUM_IR_SENSORS;i++){
+    for(i=0; i<NUM_IR_SENSORS; i++){
         Serial.print(values[i]);
-        Serial.print(",");
+        Serial.print(" ");
     }
-    Serial.println("");
+    Serial.println();
 }
 
 void loop() {
@@ -204,20 +214,19 @@ void loop() {
   readIMU(&AcY, &GyZ);
   unsigned long ts = micros();
   float dt = ((float)(ts-prev_ts))/1000000.;
-  if(dt > 0) { // Ensures the integration only over sensible sampling intervals
-    GyZ_integral += (GyZ-GyZoffset)*dt;
-  }
+  if(dt>0) GyZ_integral += (GyZ-GyZoffset)*dt;
   prev_ts = ts;
 
-  if( (micros()-last_time_ir) > 1000){ //samplin IR min 1ms
+  if( (ts-last_time_ir) > 1000){ // minimum IR sampling period: 1ms
     line_pos = qtrrc.readLine(values);
-    line_derivate = (1.*line_pos - 1.*line_pos_pre)/((micros()-last_time_ir)/1000000.) ;
-    last_time_ir=micros();
+    ts = micros();
+    line_derivate = (1.*line_pos - 1.*line_pos_pre)/((ts-last_time_ir)/1000000.) ;
+    last_time_ir=ts;
   }
 
 
 
-  for(i=0;i=NUM_DIST_SENSORS;i++){
+  for(i=0; i<NUM_DIST_SENSORS; i++){
     unsigned int read=analogRead(defAnalogPIN[i]);
     if(read < dist_min_values[i] ){
         dist_min_values[i]=read;
@@ -227,6 +236,7 @@ void loop() {
   if(Serial.available()>0){
     sendValues2ESP();
     while(Serial.available()>0)Serial.read();
+    for(i=0; i<NUM_DIST_SENSORS; i++) dist_min_values[i]=2000;
   }
 
 }
