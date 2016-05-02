@@ -6,6 +6,7 @@
 #include<Wire.h>
 #include <QTRSensors.h>
 
+#define COS45 0.70710678118
 
 /*ARRAY IR POLOLU*/
 #define IR1 2
@@ -52,9 +53,10 @@ const int MPU=0x68;  // I2C address of the MPU-6050
 #define MPU6050_SMPLRT_DIV    0x19
 #define MPU6050_CONFIG        0x1A
 
-int16_t AcX, AcY, GyZ;
+int16_t AcX=0, AcY=0, GyZ=0;
+float max_accel=0, max_accel_lateral=0;
 int16_t AcXoffset, AcYoffset, GyZoffset;
-float AcX_integral, AcY_integral, GyZ_integral;
+float GyZ_integral;
 
 
 void IMUwriteReg(byte reg, byte val) {
@@ -65,15 +67,24 @@ void IMUwriteReg(byte reg, byte val) {
   Wire.endTransmission(true);
 }
 
-void readIMU(int16_t *AcX, int16_t *AcY, int16_t *GyZ) {
+bool readIMU(int16_t *AcX, int16_t *AcY, int16_t *GyZ) {
+  int16_t new_AcX, new_AcY, new_GyZ;
+  bool updated;
   Wire.beginTransmission(MPU);
   Wire.write(0x3B);  // starting with register 0x3D (ACCEL_YOUT_H)
   Wire.endTransmission(false);
   Wire.requestFrom(MPU,14,true);  // request a total of 14 registers
-  *AcX = Wire.read()<<8|Wire.read();  // 0x3B (ACCEL_XOUT_H) & 0x3C (ACCEL_XOUT_L)
-  *AcY = Wire.read()<<8|Wire.read();  // 0x3D (ACCEL_YOUT_H) & 0x3E (ACCEL_YOUT_L)
+  new_AcX = Wire.read()<<8|Wire.read();  // 0x3B (ACCEL_XOUT_H) & 0x3C (ACCEL_XOUT_L)
+  new_AcY = Wire.read()<<8|Wire.read();  // 0x3D (ACCEL_YOUT_H) & 0x3E (ACCEL_YOUT_L)
   for(int i=0; i<8; i++) Wire.read(); // Discard 0x3F-0x46
-  *GyZ = Wire.read()<<8 | Wire.read();  // 0x47 (GYRO_ZOUT_H) & 0x48 (GYRO_ZOUT_L)
+  new_GyZ = Wire.read()<<8 | Wire.read();  // 0x47 (GYRO_ZOUT_H) & 0x48 (GYRO_ZOUT_L)
+
+  updated = (*AcX != new_AcX) || (*AcY != new_AcY) || (*GyZ != new_GyZ); // Check if value has changed
+  
+  *AcX = new_AcX;
+  *AcY = new_AcY;
+  *GyZ = new_GyZ;
+  return updated;
 }
 
 void init_IMU() {
@@ -155,7 +166,7 @@ float analogReadAverage(int pin, int samples) {
     float result = 0;
     for(int i=0; i<samples; i++) {
         result += analogRead(pin);
-        delay(1);
+        delayMicroseconds(100);
     }
     return result/(float)samples;
 }
@@ -170,15 +181,13 @@ float getDistanceCM(int pin) {
 void setup() {
   delay(400);
 
-  Serial.begin(115200);
+  Serial.begin(250000);
   Serial.println(F("Starting up sensor board..."));
 
   init_IMU();
   
   calibrateIR(5);
-
-  AcX_integral = 0;
-  AcY_integral = 0;
+  
   GyZ_integral = 0;
 }
 
@@ -191,6 +200,11 @@ void sendValues2ESP() {
     //Serial.print(",");
     Serial.print(F("Gyr: "));
     Serial.print((GyZ_integral/3000.)*180.);
+
+    Serial.print(F(" maxAccXY: "));
+    Serial.print(max_accel);
+    Serial.print(F(" "));
+    Serial.print(max_accel_lateral);
     
     Serial.print(F(" Line: "));
     Serial.print(line_pos);
@@ -216,14 +230,22 @@ void sendValues2ESP() {
     Serial.println();
 }
 
+
 void loop() {
   int i;
-  readIMU(&AcX, &AcY, &GyZ);
+  
+  bool changed = readIMU(&AcX, &AcY, &GyZ);// check if value has been updated
   unsigned long current = micros();
   float dt = ((float)(current-last_time_IMU))/1000000.;
-  if(dt > 0) {
-    GyZ_integral += (GyZ-GyZoffset)*dt;
-    last_time_IMU = current;
+  if(changed) {
+    if(dt > 0) {
+      GyZ_integral += (GyZ-GyZoffset)*dt;
+      last_time_IMU = current;
+    }
+    float accel = (AcX-AcXoffset)*COS45 + (AcY-AcYoffset)*COS45; // The sensor is rotated 45 degrees, we need to account for that
+    float accel_lateral = (AcX-AcXoffset)*COS45 - (AcY-AcYoffset)*COS45;
+    if(abs(accel) > abs(max_accel)) max_accel = accel;
+    if(abs(accel_lateral) > abs(max_accel_lateral)) max_accel_lateral = accel_lateral;
   }
 
   line_pos = qtrrc.readLine(line_values);
@@ -251,6 +273,8 @@ void loop() {
     sendValues2ESP();
     while(Serial.available() > 0) Serial.read();
     for(i=0; i<NUM_DIST_SENSORS; i++) dist_min_values[i]=1000;
+    max_accel = 0;
+    max_accel_lateral = 0;
   }
 
 }
