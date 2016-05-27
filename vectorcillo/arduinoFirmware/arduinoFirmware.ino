@@ -30,6 +30,7 @@
 #define DIST_1_PIN      A0
 unsigned int defAnalogPIN[5] = {DIST_1_PIN, DIST_2_PIN, DIST_3_PIN, DIST_4_PIN, DIST_5_PIN};
 
+#define WHEEL_DIR_PIN A7
 
 
 unsigned int line_pos_pre = 0;
@@ -41,6 +42,10 @@ float dist_values[NUM_DIST_SENSORS];
 float dist_min_values[NUM_DIST_SENSORS] = {1000};
 float dist_last_values[NUM_DIST_SENSORS] = {0};
 float dist_derivate_values[NUM_DIST_SENSORS] = {0};
+
+int wheel_direction_pre = 0;
+int wheel_direction = 0;
+float wheel_direction_derivate = 0;
 
 QTRSensorsRC qtrrc((unsigned char[]) {
   IR1, IR2, IR3, IR4, IR5, IR6, IR7, IR8
@@ -62,7 +67,6 @@ float GyZ_integral;
 
 
 void IMUwriteReg(byte reg, byte val) {
-  Wire.begin();
   Wire.beginTransmission(MPU);
   Wire.write(reg);
   Wire.write(val);
@@ -183,9 +187,11 @@ float getDistanceCM(int pin) {
 void setup() {
   delay(400);
 
-  Serial.begin(250000);
+  Serial.begin(115200);
   Serial.println(F("Starting up sensor board..."));
 
+  Wire.begin();
+  Wire.setTimeout(5);
   init_IMU();
 
   calibrateIR(5);
@@ -217,6 +223,14 @@ void sendValues2ESP() {
   //Serial.print(F("LineDt: "));
   Serial.print(line_derivate);
   Serial.print(F(" "));
+
+  //Serial.print(F("Dir: ")); 
+  Serial.print(wheel_direction);
+  Serial.print(F(" "));
+  
+  //Serial.print(F("DirDt: "));
+  Serial.print(wheel_direction_derivate);
+  Serial.print(F(" "));
   
   //Serial.print(F("minDist: "));
   for (i = 0; i < NUM_DIST_SENSORS; i++) {
@@ -225,9 +239,9 @@ void sendValues2ESP() {
   }
 
   //Serial.print(F(" DistDt: "));
-  for (i = 0; i < NUM_DIST_SENSORS; i++) {
+  for (i = 0; i < 1;/*NUM_DIST_SENSORS;*/ i++) {
     Serial.print(dist_derivate_values[i]);
-    Serial.print(F(" "));
+    //Serial.print(F(" "));
   }
   /*for(i=0; i<NUM_IR_SENSORS; i++){
       Serial.print(line_values[i]);
@@ -254,12 +268,17 @@ void loop() {
     if (abs(accel_lateral) > abs(max_accel_lateral)) max_accel_lateral = accel_lateral;
   }
 
+  wheel_direction = analogReadAverage(WHEEL_DIR_PIN, 4);
   line_pos = qtrrc.readLine(line_values);
   current = micros();
   dt = ((float)(current - last_time_line)) / 1000000.;
-  if (dt > 0.1) {
+  if (dt > 0.05) {
     line_derivate = ((float)line_pos - (float)line_pos_pre) / dt;
     line_pos_pre = line_pos;
+
+    wheel_direction_derivate = ((float)wheel_direction - (float)wheel_direction_pre) / dt;
+    wheel_direction_pre = wheel_direction;
+
     last_time_line = current;
   }
 
@@ -277,7 +296,7 @@ void loop() {
 
   current = micros();
   dt = ((float)(current - last_time_sent)) / 1000000.;
-  if (dt > 0.05) {//Serial.available() > 0) { // RX pin is dead :-(
+  if (dt > 0.01) {//Serial.available() > 0) { // the RX pin is dead :-(
     sendValues2ESP();
     //while (Serial.available() > 0) Serial.read();
     for (i = 0; i < NUM_DIST_SENSORS; i++) dist_min_values[i] = 1000;

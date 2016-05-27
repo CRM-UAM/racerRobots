@@ -43,8 +43,8 @@ void turnOffMotors() {
 
 
 void steering(int dir) {
-  if (dir > 1000) dir = 1000;
-  if (dir < -1000) dir = -1000;
+  if (dir > 1000) dir = 400;
+  if (dir < -1000) dir = -400;
   if (dir > 0) {
     analogWrite(PIN_DIR_A, dir);
     analogWrite(PIN_DIR_B, 0);
@@ -55,22 +55,48 @@ void steering(int dir) {
   delay(1); // Yield some CPU cycles to ESP8266 (to avoid watchdog restarts)
 }
 
-void setDir(int dir) {
+//void setDir(int dir) {
   /*if (abs(dir) < 50) {
     while (!digitalRead(PIN_SENSOR_R) || !digitalRead(PIN_SENSOR_L)) {
       while (!digitalRead(PIN_SENSOR_R)) steering(500);
       while (!digitalRead(PIN_SENSOR_L)) steering(-500);
     }
-  } else */if (dir > 0) {
+  } else *//*if (dir > 0) {
     while (!digitalRead(PIN_SENSOR_R) || digitalRead(PIN_SENSOR_L)) steering(500);
   } else if (dir < 0) {
     while (digitalRead(PIN_SENSOR_R) || !digitalRead(PIN_SENSOR_L)) steering(-500);
   }
   steering(dir);
+}*/
+
+
+float gyro, maxAcc, maxAccLateral, line, lineDt, dir, dirDt, minDistFront, minDistL, minDistR, distDtFront, distDtL, distDtR;
+int dirLeft=0, dirRight=0, dirIntegral=0;
+
+void empty_sensor_queue() {
+  while(Serial.available() > 0) Serial.read();
+  while (Serial.read() != '\n');
+}
+
+void read_from_sensors() {
+  gyro = Serial.parseFloat();
+  maxAcc = Serial.parseFloat();
+  maxAccLateral = Serial.parseFloat();
+  line = Serial.parseFloat();
+  lineDt = Serial.parseFloat();
+  dir = Serial.parseFloat();
+  dirDt = Serial.parseFloat();
+  minDistFront = Serial.parseFloat();
+  minDistL = Serial.parseFloat();
+  minDistR = Serial.parseFloat();
+  distDtFront = Serial.parseFloat();
+  //distDtL = Serial.parseFloat();
+  //distDtR = Serial.parseFloat();
 }
 
 
 void setup() {
+  Serial.begin(115200);
   pinMode(PIN_BUTTON, INPUT);
 
   pinMode(PIN_SENSOR_L, INPUT_PULLUP);
@@ -86,10 +112,9 @@ void setup() {
 
   turnOffMotors();
 
-
   delay(1000);
 
-  Serial.begin(250000);
+  Serial.begin(115200);
 
   Serial.print("\nConfiguring access point...");
   WiFi.softAP(ssid, pass);
@@ -108,55 +133,46 @@ void setup() {
   Serial.println("Telnet server started");
 
   Serial.println("Ready");
+
+  steering(600);
+  delay(1000);
+  empty_sensor_queue();
+  read_from_sensors();
+  dirRight = dir;
+
+  steering(-600);
+  delay(1000);
+  empty_sensor_queue();
+  read_from_sensors();
+  dirLeft = dir;
+  
+  steering(0);
 }
 
 
 
 
 
-float gyro, maxAcc, maxAccLateral, line, lineDt, minDistFront, minDistL, minDistR, distDtFront, distDtL, distDtR;
 
+
+int i=0;
 void loop() {
   if (telnet_server.hasClient()) {
     if (telnet) telnet.stop();
     telnet = telnet_server.available();
   }
-  if (Serial.available()) { // && telnet && telnet.connected()) {
-    /*float val = Serial.parseFloat();
-      setDir(val);
-      delay(1000);
-      while (Serial.available()) Serial.read();*/
-
+  
+  if(Serial.available() > 0) {
     while (Serial.read() != '\n');
-
-    gyro = Serial.parseFloat();
-    maxAcc = Serial.parseFloat();
-    maxAccLateral = Serial.parseFloat();
-    line = Serial.parseFloat();
-    lineDt = Serial.parseFloat();
-    minDistFront = Serial.parseFloat();
-    minDistL = Serial.parseFloat();
-    minDistR = Serial.parseFloat();
-    distDtFront = Serial.parseFloat();
-    distDtL = Serial.parseFloat();
-    distDtR = Serial.parseFloat();
-
-    /*if(telnet && telnet.connected()) {
-      telnet.print(gyro); telnet.print(" ");
-      telnet.print(maxAcc); telnet.print(" ");
-      telnet.print(maxAccLateral); telnet.print(" ");
-      telnet.print(line); telnet.print(" ");
-      telnet.print(lineDt); telnet.print(" ");
-      telnet.print(minDistFront); telnet.print(" ");
-      telnet.print(minDistL); telnet.print(" ");
-      telnet.print(minDistR); telnet.print(" ");
-      telnet.print(distDtFront); telnet.print(" ");
-      telnet.print(distDtL); telnet.print(" ");
-      telnet.print(distDtR); telnet.println();
-      }*/
-    float lineError = line - 3500;
-    if (telnet && telnet.connected()) telnet.println(line);
-    setDir(map(line, 7000, 0, -600, 600));
+    read_from_sensors();
+    float dirError = map(dir, dirLeft,dirRight, -1000,1000) - lineDt*0.1;
+    if (telnet && telnet.connected() && i > 20) {
+      telnet.println(dirError);
+      i=0;
+    }
+    i++;
+    dirIntegral += dirError;
+    steering(-dirError);
     //steering(map(line, 7000, 0, -900, 900));
   }
 
